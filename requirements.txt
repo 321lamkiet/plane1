@@ -2,4 +2,7 @@ streamlit
 pandas
 plotly
 apify-client
+google-genai
+pytz
 requests
+
