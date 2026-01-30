@@ -15,8 +15,8 @@ import urllib.parse
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
 st.set_page_config(
-    page_title="TikTok Intelligence OS v6.6 (Final)",
-    page_icon="🚀",
+    page_title="TikTok Intelligence OS v6.7 (AI Fix)",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -45,7 +45,7 @@ st.markdown("""
 # 2. DATABASE ENGINE
 # ==========================================
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v66_final.db"): 
+    def __init__(self, db_name="tiktok_v67_autofix.db"): 
         self.db_name = db_name
         self.init_db()
 
@@ -201,11 +201,8 @@ def run_apify_scan(token, hashtags_str, limit, country_code, filter_mode, ai_key
     if custom_proxy and custom_proxy.strip():
         proxy_config = {"useApifyProxy": False, "proxyUrls": [custom_proxy.strip()]}
     else:
-        # [GLOBAL LOGIC]
-        if country_code == "ALL": 
-             proxy_config = {"useApifyProxy": True}
-        else:
-             proxy_config = {"useApifyProxy": True, "apifyProxyCountry": country_code}
+        if country_code == "ALL": proxy_config = {"useApifyProxy": True} 
+        else: proxy_config = {"useApifyProxy": True, "apifyProxyCountry": country_code}
 
     hashtags_list = [h.strip() for h in hashtags_str.split(",") if h.strip()]
     if not hashtags_list: return False, "Nhập ít nhất 1 hashtag!"
@@ -253,24 +250,33 @@ def run_apify_scan(token, hashtags_str, limit, country_code, filter_mode, ai_key
     except Exception as e:
         return False, str(e)
 
+# [FIX MẠNH] Tự động thử các Model khác nhau
 def analyze_with_gemini(api_key, video_desc, author):
     if not api_key: return "⚠️ Thiếu Gemini API Key"
-    try:
-        genai.configure(api_key=api_key)
-        # Sử dụng Model mới nhất, nhanh nhất
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"Phân tích Marketing TikTok: Tác giả: {author}, Caption: {video_desc}. 3 ý ngắn gọn: Hook, Nỗi đau, Kịch bản remake."
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Lỗi AI: {str(e)}"
+    genai.configure(api_key=api_key)
+    
+    # Danh sách các model để thử lần lượt
+    models_to_try = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.5-pro-latest']
+    
+    last_error = ""
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            prompt = f"Phân tích Marketing TikTok: Tác giả: {author}, Caption: {video_desc}. 3 ý ngắn gọn: Hook, Nỗi đau, Kịch bản remake."
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            last_error = str(e)
+            continue # Nếu lỗi, thử model tiếp theo
+            
+    return f"Lỗi AI (Đã thử hết các model): {last_error}"
 
 # ==========================================
 # 5. GIAO DIỆN (FRONTEND)
 # ==========================================
 with st.sidebar:
     st.title("🦅 TikTok Intelligence OS")
-    st.caption("v6.6 | Final Release")
+    st.caption("v6.7 | Auto-Fix AI")
     
     with st.expander("🔑 Cấu hình API", expanded=True):
         apify_token = st.text_input("Apify Token", type="password")
@@ -334,7 +340,6 @@ st.markdown(f"### 🏳️ {selected_country}: {local_time} | {status_html}", uns
 df_all = db.fetch_data()
 df_saved = db.fetch_data(only_saved=True)
 
-# [FIX] Đảm bảo dữ liệu an toàn cho biểu đồ
 if not df_all.empty:
     df_all['safe_followers'] = df_all['author_followers'].replace(0, 1)
     df_all['viral_ratio'] = df_all['current_views'] / df_all['safe_followers']
@@ -404,13 +409,15 @@ with main_tab2:
         render_video_list(df_saved, is_saved_tab=True)
 
 with main_tab3:
-    if not df_all.empty and 'viral_ratio' in df_all.columns:
-        fig_scatter = px.scatter(
-            df_all, x="author_followers", y="velocity_value", size="current_views", 
-            color="viral_ratio", hover_name="author_name", log_x=True, 
-            color_continuous_scale="Turbo", title="Rađa Săn Viral"
-        )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+    if not df_all.empty:
+        if 'viral_ratio' in df_all.columns:
+            fig_scatter = px.scatter(
+                df_all, x="author_followers", y="velocity_value", size="current_views", 
+                color="viral_ratio", hover_name="author_name", log_x=True, 
+                color_continuous_scale="Turbo", title="Rađa Săn Viral"
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+        else:
+            st.warning("Đang tính toán dữ liệu...")
     else:
-        st.info("Chưa có đủ dữ liệu để vẽ biểu đồ.")
-
+        st.info("Chưa có dữ liệu.")
