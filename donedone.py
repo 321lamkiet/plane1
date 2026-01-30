@@ -13,9 +13,9 @@ import urllib.parse
 import requests
 
 # ==========================================
-# CẤU HÌNH (v11.1 Multi-Search)
+# CẤU HÌNH (v14.1 Clean Ultimate)
 # ==========================================
-st.set_page_config(page_title="TikTok OS v11.1", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="TikTok OS v14.1", page_icon="💎", layout="wide")
 
 st.markdown("""
 <style>
@@ -27,7 +27,7 @@ st.markdown("""
 
 # DATABASE
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v111_multi.db"): 
+    def __init__(self, db_name="tiktok_v141_clean.db"): 
         self.db_name = db_name
         self.init_db()
     @contextlib.contextmanager
@@ -48,6 +48,7 @@ class DatabaseEngine:
         vid_id = data.get('id'); author = data.get('authorMeta', {}).get('name', 'Unknown')
         if not vid_id: return
         
+        # Lấy link MP4 trực tiếp
         download_url = data.get('videoMeta', {}).get('downloadAddr', '')
         web_url = data.get('webVideoUrl', '')
         final_url = download_url if download_url else web_url
@@ -77,7 +78,7 @@ def calc_vel(item):
     age = max(1.0, (now - datetime.fromtimestamp(item.get('createTime', 0))).total_seconds() / 3600.0)
     return round(curr_views / age, 1), "🆕 Dự báo"
 
-# LOGIC QUÉT MỚI (HỖ TRỢ TÁCH TỪ KHÓA)
+# LOGIC QUÉT
 def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy, separate_search):
     if not token: return False, "Thiếu Token!"
     client = ApifyClient(token)
@@ -90,11 +91,10 @@ def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy, separate_
 
     total_videos = 0
     
-    # --- LOGIC QUÉT RIÊNG LẺ ---
     if separate_search:
         status_box = st.empty()
         for i, tag in enumerate(tag_list):
-            status_box.info(f"⏳ Đang quét từ khóa [{i+1}/{len(tag_list)}]: '{tag}' ({limit} video)...")
+            status_box.info(f"⏳ Đang quét từ khóa [{i+1}/{len(tag_list)}]: '{tag}'...")
             try:
                 run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": [tag], "resultsPerPage": limit, "proxyConfiguration": p_config, "searchSection": ""})
                 if not run: continue
@@ -107,12 +107,9 @@ def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy, separate_
                     
                     v, t = calc_vel(item); db.upsert_video(item, v, t); count += 1
                 total_videos += count
-            except Exception as e:
-                st.error(f"Lỗi khi quét '{tag}': {str(e)}")
+            except: pass
         status_box.empty()
-        return True, f"✅ Đã quét xong {len(tag_list)} từ khóa. Tổng cộng: {total_videos} video."
-
-    # --- LOGIC QUÉT GỘP (NHƯ CŨ) ---
+        return True, f"✅ Tổng cộng: {total_videos} video."
     else:
         try:
             run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": tag_list, "resultsPerPage": limit, "proxyConfiguration": p_config, "searchSection": ""})
@@ -122,7 +119,6 @@ def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy, separate_
             for item in items:
                 is_ai = any(k in item.get('text', '').lower() for k in ai_keys.split(',')) if ai_keys else False
                 if (filter_mode == "🎯 Chỉ lấy Video AI" and not is_ai) or (filter_mode == "🚫 Chặn Video AI" and is_ai): continue
-                
                 v, t = calc_vel(item); db.upsert_video(item, v, t); count += 1
             return True, f"✅ Đã lưu {count} video."
         except Exception as e: return False, str(e)
@@ -133,29 +129,27 @@ def run_gemini(key, desc, auth):
     try:
         client = genai.Client(api_key=key)
         try:
-            return client.models.generate_content(model="gemini-2.0-flash", contents=f"Phân tích ngắn: {auth}, {desc}. Hook, Pain, Remake.").text
+            return client.models.generate_content(model="gemini-2.0-flash", contents=f"Phân tích ngắn gọn video TikTok: Tác giả {auth}, Caption: {desc}. 3 ý: Hook (Câu dẫn), Pain Point (Nỗi đau), Remake Idea (Ý tưởng làm lại).").text
         except:
             time.sleep(2)
-            return client.models.generate_content(model="gemini-1.5-flash", contents=f"Phân tích ngắn: {auth}, {desc}. Hook, Pain, Remake.").text
+            return client.models.generate_content(model="gemini-1.5-flash", contents=f"Phân tích ngắn gọn: {auth}, {desc}. Hook, Pain, Remake.").text
     except Exception as e: return f"Lỗi AI: {str(e)}"
 
 # GIAO DIỆN
 with st.sidebar:
-    st.title("🦅 TikTok OS v11.1"); st.caption("Multi-Keyword Mode")
+    st.title("🦅 TikTok OS v14.1"); st.caption("Clean & Powerful")
     
     with st.expander("🔑 Cấu hình API", expanded=True):
         api_tk = st.text_input("Apify Token", type="password")
         gemini_tk = st.text_input("Gemini API Key", type="password")
     
     with st.expander("⚙️ Quét & Lọc", expanded=True):
-        tags = st.text_area("Hashtags (phân cách bằng dấu phẩy)", "shilajit, sea moss, amazonfinds")
-        
-        # [NEW] Checkbox chế độ quét riêng
-        separate_search = st.checkbox("✅ Quét riêng từng từ khóa", value=False, help="Nếu chọn: Quét 10 video cho từ A, rồi quét 10 video cho từ B. Nếu không chọn: Quét trộn lẫn.")
+        tags = st.text_area("Hashtags", "shilajit, amazonfinds")
+        separate_search = st.checkbox("✅ Quét riêng từng từ khóa", value=False)
         
         country_map = {"🌐 Global": "ALL", "Mỹ": "US", "Việt Nam": "VN", "Anh": "GB", "Pháp": "FR"}
         country = country_map[st.selectbox("Quốc gia", list(country_map.keys()))]
-        limit = st.slider("Số lượng (cho mỗi lần quét)", 10, 100, 10) # Mặc định 10 cho đúng ý bạn
+        limit = st.slider("Số lượng", 10, 100, 20)
         
         st.markdown("---")
         st.markdown("**🤖 AI Hunter**")
@@ -164,7 +158,7 @@ with st.sidebar:
         use_filter = st.checkbox("Ẩn kênh lớn view thấp", value=True)
 
     if st.button("🚀 QUÉT NGAY", type="primary"): 
-        with st.status("Đang khởi động..."):
+        with st.status("Đang quét..."):
             s, m = run_scan(api_tk, tags, limit, country, filter_mode, ai_keys, "", separate_search)
             if s: st.success(m); time.sleep(1); st.rerun()
             else: st.error(m)
@@ -199,18 +193,22 @@ if not df_all.empty:
                 c1, c2 = st.columns([1.5, 1])
                 c1.caption(f"👀 {r['current_views']:,} views | 👤 {r['author_followers']:,} subs")
                 c1.caption(f"🎵 {r['music_title']}")
+                
+                # Nút chức năng
                 if c2.button("❤️ Lưu/Bỏ", key=f"s_{r['video_id']}_{saved}"): db.toggle_save(r['video_id'], r['is_saved']); st.rerun()
                 
                 if c2.button("🧠 Phân tích AI", key=f"a_{r['video_id']}_{saved}"):
-                    with st.spinner("AI đang đọc..."):
+                    with st.spinner("AI đang đọc kịch bản..."):
                         anl = run_gemini(gemini_tk, r['description'], r['author_name'])
                         db.update_ai(r['video_id'], anl); st.rerun()
                 
-                try: st.video(r['video_url'])
-                except: st.warning("Không thể phát video.")
+                # Player
+                try: 
+                    st.video(r['video_url'])
+                except: 
+                    st.warning("Video không phát được.")
+                    st.markdown(f"[🔗 Link Gốc]({r['video_url']})")
                 
-                q = urllib.parse.quote(r['description'][:50])
-                st.markdown(f"**🛒 Nguồn:** [🔎 Amazon](https://www.amazon.com/s?k={q}) | [🛍️ AliExpress](https://www.aliexpress.com/wholesale?SearchText={q})")
                 if r['ai_analysis']: st.info(r['ai_analysis'])
 
     with t1: render(df_all)
