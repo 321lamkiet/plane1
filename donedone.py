@@ -7,16 +7,15 @@ from datetime import datetime
 import time
 import contextlib
 import pytz
-import google.generativeai as genai
+from google import genai # [NEW] Thư viện mới của Google
 import streamlit.components.v1 as components
 import urllib.parse
 
 # ==========================================
-# CẤU HÌNH HỆ THỐNG (v7.3 Final Fix)
+# CẤU HÌNH (v8.0 Modern Core)
 # ==========================================
-st.set_page_config(page_title="TikTok OS v7.3", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="TikTok OS v8.0", page_icon="⚡", layout="wide")
 
-# CSS giao diện
 st.markdown("""
 <style>
    .stApp { background-color: #0E1117; }
@@ -25,9 +24,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# DATABASE ENGINE
+# DATABASE
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v73_final.db"): 
+    def __init__(self, db_name="tiktok_v80_modern.db"): 
         self.db_name = db_name
         self.init_db()
     @contextlib.contextmanager
@@ -60,7 +59,7 @@ class DatabaseEngine:
 
 db = DatabaseEngine()
 
-# LOGIC TÍNH TOÁN
+# LOGIC QUÉT
 def calc_vel(item):
     prev = db.get_last_metric(item['id'])
     curr_views = item.get('playCount', 0); now = datetime.now()
@@ -71,7 +70,7 @@ def calc_vel(item):
     return round(curr_views / age, 1), "🆕 Dự báo"
 
 def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy):
-    if not token: return False, "Thiếu Token Apify!"
+    if not token: return False, "Thiếu Token!"
     client = ApifyClient(token)
     p_config = {"useApifyProxy": True}
     if proxy: p_config = {"useApifyProxy": False, "proxyUrls": [proxy]}
@@ -79,80 +78,71 @@ def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy):
     
     try:
         run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": tags.split(','), "resultsPerPage": limit, "proxyConfiguration": p_config, "searchSection": ""})
-        if not run: return False, "Lỗi Apify: Không chạy được Actor."
         items = client.dataset(run['defaultDatasetId']).list_items().items
-        if not items: return False, "Không tìm thấy video nào."
-        
+        if not items: return False, "Không có video."
         count = 0
         for item in items:
             is_ai = any(k in item.get('text', '').lower() for k in ai_keys.split(','))
             if (filter_mode == "🎯 Chỉ lấy Video AI" and not is_ai) or (filter_mode == "🚫 Chặn Video AI" and is_ai): continue
             v, t = calc_vel(item); db.upsert_video(item, v, t); count += 1
-        return True, f"Đã lưu {count} video thành công."
+        return True, f"Lưu {count} video."
     except Exception as e: return False, str(e)
 
-# [QUAN TRỌNG] HÀM GEMINI DEBUG
+# [NEW] CẤU TRÚC GENAI MỚI (V1.0)
 def run_gemini(key, desc, auth):
-    if not key: return "⚠️ Chưa nhập Gemini API Key"
-    genai.configure(api_key=key)
-    
-    # Thử danh sách model từ mới đến cũ
-    models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-    
-    errors = []
-    for m in models:
-        try:
-            model = genai.GenerativeModel(m)
-            response = model.generate_content(f"Phân tích ngắn gọn video TikTok này để làm Affiliate: Tác giả {auth}, Nội dung: {desc}. 3 ý: Hook, Nỗi đau, Kịch bản remake.")
-            return response.text
-        except Exception as e:
-            errors.append(f"{m}: {str(e)}")
-            continue
-            
-    # Nếu tất cả đều lỗi, in chi tiết lỗi ra để sửa
-    return f"❌ Lỗi AI: {errors[0]} (Hãy kiểm tra lại API Key hoặc đổi mạng)"
+    if not key: return "⚠️ Thiếu API Key"
+    try:
+        # Cú pháp mới của thư viện google-genai
+        client = genai.Client(api_key=key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash", # Dùng model mới nhất
+            contents=f"Phân tích Marketing TikTok: Tác giả {auth}, Caption: {desc}. 3 ý: Hook, Nỗi đau, Remake."
+        )
+        return response.text
+    except Exception as e:
+        return f"❌ Lỗi AI: {str(e)}"
 
-# GIAO DIỆN
+# UI
 with st.sidebar:
-    st.title("🦅 TikTok OS v7.3"); st.caption("Final Stable Fix")
+    st.title("🦅 TikTok OS v8.0"); st.caption("New AI Core")
     api_tk = st.text_input("Apify Token", type="password")
     gemini_tk = st.text_input("Gemini API Key", type="password")
-    tags = st.text_area("Hashtags", "shilajit, amazonfinds")
+    tags = st.text_area("Hashtags", "shilajit")
     country = st.selectbox("Quốc gia", ["ALL", "US", "VN"], index=1)
-    
     if st.button("🚀 QUÉT"): 
-        with st.status("Đang quét..."):
-            s, m = run_scan(api_tk, tags, 30, country, "🌐 Hiển thị tất cả", "", "")
-            if s: st.success(m); time.sleep(1); st.rerun()
-            else: st.error(m)
+        s, m = run_scan(api_tk, tags, 30, country, "🌐 Hiển thị tất cả", "", "")
+        if s: st.success(m); time.sleep(1); st.rerun()
+        else: st.error(m)
 
 df = db.fetch()
 if not df.empty:
-    # XỬ LÝ DỮ LIỆU AN TOÀN TUYỆT ĐỐI CHO BIỂU ĐỒ
-    df['followers'] = pd.to_numeric(df['author_followers'], errors='coerce').fillna(1)
-    df['followers'] = df['followers'].apply(lambda x: x if x > 0 else 1) # Tránh chia cho 0
-    df['views'] = pd.to_numeric(df['current_views'], errors='coerce').fillna(0)
-    df['velocity'] = pd.to_numeric(df['velocity_value'], errors='coerce').fillna(0)
-    df['ratio'] = df['views'] / df['followers']
-    
-    st.markdown(f"### 🔥 Tìm thấy {len(df)} Video")
-    
+    # [FIX] DỮ LIỆU BIỂU ĐỒ AN TOÀN
+    try:
+        # Ép kiểu số, nếu lỗi thành 0
+        df['followers'] = pd.to_numeric(df['author_followers'], errors='coerce').fillna(0)
+        df['views'] = pd.to_numeric(df['current_views'], errors='coerce').fillna(0)
+        df['velocity'] = pd.to_numeric(df['velocity_value'], errors='coerce').fillna(0)
+        
+        # Đảm bảo followers >= 1 để vẽ Logarit không lỗi
+        df['safe_followers'] = df['followers'].apply(lambda x: x if x > 0 else 1)
+        df['ratio'] = df['views'] / df['safe_followers']
+    except Exception as e:
+        st.error(f"Lỗi xử lý dữ liệu: {e}")
+
     tab1, tab2 = st.tabs(["List Video", "Biểu Đồ"])
     with tab1:
         for _, r in df.head(50).iterrows():
             with st.expander(f"💎 {r['velocity_value']:.0f}/h | {r['author_name']}"):
                 st.components.v1.iframe(f"https://www.tiktok.com/embed/v2/{r['video_id']}", height=400)
-                if st.button("🧠 Phân tích (Gemini)", key=r['video_id']):
-                    with st.spinner("AI đang đọc..."):
-                        anl = run_gemini(gemini_tk, r['description'], r['author_name'])
-                        db.update_ai(r['video_id'], anl); st.rerun()
+                if st.button("🧠 Phân tích (New AI)", key=r['video_id']):
+                    anl = run_gemini(gemini_tk, r['description'], r['author_name'])
+                    db.update_ai(r['video_id'], anl); st.rerun()
                 if r['ai_analysis']: st.info(r['ai_analysis'])
     with tab2:
         try:
-            fig = px.scatter(df, x='followers', y='velocity', size='views', color='ratio', 
-                             hover_name='author_name', log_x=True, title="Rađa Viral (Kênh nhỏ - Tốc độ cao)")
-            st.plotly_chart(fig, use_container_width=True)
+            # Vẽ biểu đồ với dữ liệu sạch 'safe_followers'
+            st.plotly_chart(px.scatter(df, x='safe_followers', y='velocity', size='views', color='ratio', log_x=True, title="Rađa Viral"), use_container_width=True)
         except Exception as e:
-            st.error(f"Không thể vẽ biểu đồ: {str(e)}")
+            st.error(f"Lỗi vẽ biểu đồ: {e}")
 else:
-    st.info("Chưa có dữ liệu. Hãy nhập Token và bấm Quét.")
+    st.info("Chưa có dữ liệu.")
