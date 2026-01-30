@@ -7,14 +7,15 @@ from datetime import datetime
 import time
 import contextlib
 import pytz
-from google import genai # [NEW] Thư viện mới của Google
+from google import genai
+from google.genai import types
 import streamlit.components.v1 as components
 import urllib.parse
 
 # ==========================================
-# CẤU HÌNH (v8.0 Modern Core)
+# CẤU HÌNH (v8.1 Resilience)
 # ==========================================
-st.set_page_config(page_title="TikTok OS v8.0", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="TikTok OS v8.1", page_icon="🛡️", layout="wide")
 
 st.markdown("""
 <style>
@@ -26,7 +27,7 @@ st.markdown("""
 
 # DATABASE
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v80_modern.db"): 
+    def __init__(self, db_name="tiktok_v81_resilience.db"): 
         self.db_name = db_name
         self.init_db()
     @contextlib.contextmanager
@@ -88,23 +89,37 @@ def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy):
         return True, f"Lưu {count} video."
     except Exception as e: return False, str(e)
 
-# [NEW] CẤU TRÚC GENAI MỚI (V1.0)
+# [FIX MẠNH] AI CHỐNG QUOTA EXCEEDED
 def run_gemini(key, desc, auth):
     if not key: return "⚠️ Thiếu API Key"
     try:
-        # Cú pháp mới của thư viện google-genai
         client = genai.Client(api_key=key)
-        response = client.models.generate_content(
-            model="gemini-2.0-flash", # Dùng model mới nhất
-            contents=f"Phân tích Marketing TikTok: Tác giả {auth}, Caption: {desc}. 3 ý: Hook, Nỗi đau, Remake."
-        )
-        return response.text
+        
+        # Thử model mới nhất trước
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash", 
+                contents=f"Phân tích Marketing TikTok: Tác giả {auth}, Caption: {desc}. 3 ý: Hook, Nỗi đau, Remake."
+            )
+            return response.text
+        except Exception as e:
+            # Nếu bị lỗi Quota (429), chờ 5s rồi thử model nhẹ hơn
+            if "429" in str(e) or "Quota" in str(e):
+                time.sleep(5) 
+                response = client.models.generate_content(
+                    model="gemini-1.5-flash", # Fallback sang model nhẹ
+                    contents=f"Phân tích ngắn: {auth}, {desc}. Hook, Pain, Remake."
+                )
+                return response.text
+            else:
+                return f"Lỗi AI: {str(e)}"
+                
     except Exception as e:
-        return f"❌ Lỗi AI: {str(e)}"
+        return f"Lỗi Kết nối AI: {str(e)}"
 
 # UI
 with st.sidebar:
-    st.title("🦅 TikTok OS v8.0"); st.caption("New AI Core")
+    st.title("🦅 TikTok OS v8.1"); st.caption("Resilience Edition")
     api_tk = st.text_input("Apify Token", type="password")
     gemini_tk = st.text_input("Gemini API Key", type="password")
     tags = st.text_area("Hashtags", "shilajit")
@@ -116,18 +131,17 @@ with st.sidebar:
 
 df = db.fetch()
 if not df.empty:
-    # [FIX] DỮ LIỆU BIỂU ĐỒ AN TOÀN
+    # [FIX] CHỐNG LỖI BIỂU ĐỒ VALUE ERROR
     try:
-        # Ép kiểu số, nếu lỗi thành 0
         df['followers'] = pd.to_numeric(df['author_followers'], errors='coerce').fillna(0)
         df['views'] = pd.to_numeric(df['current_views'], errors='coerce').fillna(0)
         df['velocity'] = pd.to_numeric(df['velocity_value'], errors='coerce').fillna(0)
         
-        # Đảm bảo followers >= 1 để vẽ Logarit không lỗi
+        # Biến số 0 thành 1 để logarit không bị lỗi
         df['safe_followers'] = df['followers'].apply(lambda x: x if x > 0 else 1)
         df['ratio'] = df['views'] / df['safe_followers']
-    except Exception as e:
-        st.error(f"Lỗi xử lý dữ liệu: {e}")
+    except:
+        st.error("Lỗi xử lý dữ liệu.")
 
     tab1, tab2 = st.tabs(["List Video", "Biểu Đồ"])
     with tab1:
@@ -135,14 +149,14 @@ if not df.empty:
             with st.expander(f"💎 {r['velocity_value']:.0f}/h | {r['author_name']}"):
                 st.components.v1.iframe(f"https://www.tiktok.com/embed/v2/{r['video_id']}", height=400)
                 if st.button("🧠 Phân tích (New AI)", key=r['video_id']):
-                    anl = run_gemini(gemini_tk, r['description'], r['author_name'])
-                    db.update_ai(r['video_id'], anl); st.rerun()
+                    with st.spinner("Đang phân tích (có thể chờ 5s nếu mạng bận)..."):
+                        anl = run_gemini(gemini_tk, r['description'], r['author_name'])
+                        db.update_ai(r['video_id'], anl); st.rerun()
                 if r['ai_analysis']: st.info(r['ai_analysis'])
     with tab2:
         try:
-            # Vẽ biểu đồ với dữ liệu sạch 'safe_followers'
             st.plotly_chart(px.scatter(df, x='safe_followers', y='velocity', size='views', color='ratio', log_x=True, title="Rađa Viral"), use_container_width=True)
         except Exception as e:
-            st.error(f"Lỗi vẽ biểu đồ: {e}")
+            st.warning("Không thể vẽ biểu đồ do dữ liệu chưa đủ.")
 else:
     st.info("Chưa có dữ liệu.")
