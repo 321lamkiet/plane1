@@ -15,8 +15,8 @@ import urllib.parse
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
 st.set_page_config(
-    page_title="TikTok Intelligence OS v6.7 (AI Fix)",
-    page_icon="🤖",
+    page_title="TikTok Intelligence OS v6.8",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -45,7 +45,7 @@ st.markdown("""
 # 2. DATABASE ENGINE
 # ==========================================
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v67_autofix.db"): 
+    def __init__(self, db_name="tiktok_v68_stable.db"): 
         self.db_name = db_name
         self.init_db()
 
@@ -250,13 +250,18 @@ def run_apify_scan(token, hashtags_str, limit, country_code, filter_mode, ai_key
     except Exception as e:
         return False, str(e)
 
-# [FIX MẠNH] Tự động thử các Model khác nhau
+# [FIX] CƠ CHẾ AI TỰ ĐỘNG CHUYỂN ĐỔI (AUTO-FALLBACK)
 def analyze_with_gemini(api_key, video_desc, author):
     if not api_key: return "⚠️ Thiếu Gemini API Key"
     genai.configure(api_key=api_key)
     
-    # Danh sách các model để thử lần lượt
-    models_to_try = ['gemini-1.5-flash', 'gemini-pro', 'gemini-1.5-pro-latest']
+    # Thử lần lượt các model. Nếu cái này lỗi thì thử cái kia.
+    models_to_try = [
+        'gemini-1.5-flash', 
+        'gemini-1.5-pro',
+        'gemini-pro',
+        'gemini-1.0-pro'
+    ]
     
     last_error = ""
     for model_name in models_to_try:
@@ -266,17 +271,18 @@ def analyze_with_gemini(api_key, video_desc, author):
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
+            # Nếu lỗi, ghi lại và thử model tiếp theo
             last_error = str(e)
-            continue # Nếu lỗi, thử model tiếp theo
+            continue 
             
-    return f"Lỗi AI (Đã thử hết các model): {last_error}"
+    return f"Lỗi AI (Đã thử hết cách): {last_error}. Hãy kiểm tra lại API Key."
 
 # ==========================================
 # 5. GIAO DIỆN (FRONTEND)
 # ==========================================
 with st.sidebar:
     st.title("🦅 TikTok Intelligence OS")
-    st.caption("v6.7 | Auto-Fix AI")
+    st.caption("v6.8 | Error Proof")
     
     with st.expander("🔑 Cấu hình API", expanded=True):
         apify_token = st.text_input("Apify Token", type="password")
@@ -340,14 +346,13 @@ st.markdown(f"### 🏳️ {selected_country}: {local_time} | {status_html}", uns
 df_all = db.fetch_data()
 df_saved = db.fetch_data(only_saved=True)
 
+# [FIX] TÍNH TOÁN AN TOÀN TRƯỚC KHI VẼ
 if not df_all.empty:
     df_all['safe_followers'] = df_all['author_followers'].replace(0, 1)
     df_all['viral_ratio'] = df_all['current_views'] / df_all['safe_followers']
 
     if use_viral_filter:
         df_all = df_all[ (df_all['viral_ratio'] > 0.5) | (df_all['velocity_value'] > 500) ]
-else:
-    df_all['viral_ratio'] = 0
 
 # --- METRICS ---
 k1, k2, k3, k4 = st.columns(4)
@@ -409,15 +414,19 @@ with main_tab2:
         render_video_list(df_saved, is_saved_tab=True)
 
 with main_tab3:
+    # [FIX] BỌC KỸ PHẦN VẼ BIỂU ĐỒ ĐỂ KHÔNG BAO GIỜ CRASH
     if not df_all.empty:
         if 'viral_ratio' in df_all.columns:
-            fig_scatter = px.scatter(
-                df_all, x="author_followers", y="velocity_value", size="current_views", 
-                color="viral_ratio", hover_name="author_name", log_x=True, 
-                color_continuous_scale="Turbo", title="Rađa Săn Viral"
-            )
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            try:
+                fig_scatter = px.scatter(
+                    df_all, x="author_followers", y="velocity_value", size="current_views", 
+                    color="viral_ratio", hover_name="author_name", log_x=True, 
+                    color_continuous_scale="Turbo", title="Rađa Săn Viral"
+                )
+                st.plotly_chart(fig_scatter, use_container_width=True)
+            except Exception as e:
+                st.error(f"Lỗi vẽ biểu đồ: {str(e)}. Hãy thử quét thêm dữ liệu.")
         else:
-            st.warning("Đang tính toán dữ liệu...")
+            st.warning("Đang tính toán dữ liệu, vui lòng chờ...")
     else:
-        st.info("Chưa có dữ liệu.")
+        st.info("📊 Chưa có dữ liệu để vẽ biểu đồ. Hãy nhập Hashtag và bấm Quét.")
