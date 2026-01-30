@@ -11,25 +11,25 @@ import os
 import tempfile
 from google import genai
 from google.genai import types
+import streamlit.components.v1 as components # Thư viện để nhúng trình duyệt
 
 # ==========================================
-# CẤU HÌNH (v20.0 Clean & AI Hunter)
+# CẤU HÌNH (v22.0 Browser Player)
 # ==========================================
-st.set_page_config(page_title="TikTok OS v20.0", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="TikTok OS v22.0", page_icon="🌐", layout="wide")
 
 st.markdown("""
 <style>
    .stApp { background-color: #0E1117; }
-   div[data-testid="stMetric"] { background-color: #1F2937; border: 1px solid #374151; border-radius: 8px; padding: 15px; }
-   div[data-testid="stMetricValue"] { font-size: 24px; color: #34D399; }
+   div[data-testid="stMetric"] { background-color: #1F2937; border: 1px solid #374151; border-radius: 8px; padding: 10px; }
+   div[data-testid="stMetricValue"] { font-size: 20px; color: #34D399; }
    .analysis-box { background-color: #1F2937; padding: 20px; border-radius: 10px; border: 1px solid #374151; margin-top: 10px; }
-   img { border-radius: 50%; }
 </style>
 """, unsafe_allow_html=True)
 
-# DATABASE ENGINE
+# DATABASE
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v20_hunter.db"): 
+    def __init__(self, db_name="tiktok_v22_embed.db"): 
         self.db_name = db_name
         self.init_db()
     @contextlib.contextmanager
@@ -82,7 +82,6 @@ class DatabaseEngine:
                              datetime.now()
                          ))
             conn.commit()
-            
     def fetch(self):
         with self.get_connection() as conn: return pd.read_sql("SELECT * FROM videos ORDER BY play_count DESC", conn)
 
@@ -95,18 +94,23 @@ def run_scan(token, tags, limit):
     tag_list = [t.strip() for t in tags.split(',') if t.strip()]
     
     try:
-        run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": tag_list, "resultsPerPage": limit})
-        if not run: return False, "Lỗi gọi Actor."
+        run_input = {
+            "hashtags": tag_list,
+            "resultsPerPage": limit,
+            "searchSection": "",
+            "proxyConfiguration": {"useApifyProxy": True}
+        }
+        run = client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
+        if not run: return False, "Lỗi Actor."
         items = client.dataset(run['defaultDatasetId']).list_items().items
         if not items: return False, "Không có video."
-        
         count = 0
         for item in items:
             db.upsert_video(item); count += 1
-        return True, f"Đã lấy về {count} video!"
+        return True, f"Đã lấy {count} video!"
     except Exception as e: return False, f"Lỗi: {str(e)}"
 
-# LOGIC AI PHÂN TÍCH
+# LOGIC AI
 def analyze_video_file(api_key, video_path):
     if not api_key: return "⚠️ Thiếu Gemini API Key!"
     time.sleep(2)
@@ -116,8 +120,7 @@ def analyze_video_file(api_key, video_path):
             uploaded_file = client.files.upload(file=video_path)
         while uploaded_file.state.name == "PROCESSING":
             time.sleep(1); uploaded_file = client.files.get(name=uploaded_file.name)
-            
-        prompt = "Phân tích video này: 1. Hook (3s đầu), 2. Nỗi đau, 3. Script, 4. Gợi ý Remake. Trả lời tiếng Việt."
+        prompt = "Phân tích video TikTok này: Hook, Pain Point, Script, Remake Idea. Tiếng Việt."
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=[types.Content(role="user", parts=[types.Part.from_uri(file_uri=uploaded_file.uri, mime_type="video/mp4"), types.Part.from_text(text=prompt)])]
@@ -125,108 +128,80 @@ def analyze_video_file(api_key, video_path):
         return response.text
     except Exception as e: return f"Lỗi AI: {str(e)}"
 
+# HÀM NHÚNG TRÌNH DUYỆT (EMBED BROWSER STYLE)
+def render_tiktok_embed(video_url, video_id):
+    # Đây là mã nhúng CHÍNH HÃNG của TikTok
+    # Nó sẽ hiển thị player y hệt như trên web, không cần gọi API
+    embed_code = f"""
+    <blockquote class="tiktok-embed" cite="{video_url}" data-video-id="{video_id}" style="max-width: 100%;min-width: 325px;" >
+        <section> <a target="_blank" title="{video_id}" href="{video_url}">Checking TikTok...</a> </section>
+    </blockquote>
+    <script async src="https://www.tiktok.com/embed.js"></script>
+    """
+    # Chiều cao 750px để hiển thị trọn vẹn video dọc
+    components.html(embed_code, height=750, scrolling=True)
+
 # GIAO DIỆN
 with st.sidebar:
     st.header("🔑 Cấu hình")
     apify_tk = st.text_input("Apify Token", type="password")
     gemini_tk = st.text_input("Gemini API Key", type="password")
-    
     st.divider()
-    
-    st.header("🧹 Bộ Lọc Rác")
-    min_views = st.number_input("Tối thiểu View:", value=1000, step=1000, help="Ẩn video dưới mức này")
-    min_diggs = st.number_input("Tối thiểu Tim:", value=50, step=50, help="Ẩn video ít like")
-    
-    st.divider()
-    
-    st.header("🤖 Rađa Video AI")
-    ai_mode = st.radio("Chế độ lọc AI:", 
-                       ["🌐 Tất cả (Mặc định)", "🎯 Chỉ lấy Video AI", "🚫 Chặn Video AI"],
-                       help="Tìm video có chứa hashtag #ai, #midjourney, #chatgpt...")
-    
-    st.divider()
-    
     tags = st.text_input("Hashtags", "shilajit, amazonfinds")
-    limit = st.slider("Số lượng quét", 10, 100, 20)
-    
-    if st.button("🚀 QUÉT MỚI", type="primary"):
-        with st.status("Đang quét dữ liệu..."):
+    limit = st.slider("Số lượng", 5, 50, 10)
+    if st.button("🚀 QUÉT NGAY", type="primary"):
+        with st.status("Đang quét..."):
             s, m = run_scan(apify_tk, tags, limit)
             if s: st.success(m); time.sleep(1); st.rerun()
             else: st.error(m)
 
-# MAIN TABS
-tab1, tab2, tab3 = st.tabs(["🔥 Danh sách Video (Đã Lọc)", "🧠 AI Upload", "📊 Biểu Đồ"])
-
-# DANH SÁCH TỪ KHÓA AI
-AI_KEYWORDS = ['#ai', 'ai art', 'generated', 'midjourney', 'chatgpt', 'openai', 'artificial', 'nhân tạo', 'robot', 'virtual', 'sora', 'heygen']
+# TABS
+tab1, tab2 = st.tabs(["🔥 Danh sách Video (Giao diện Web)", "🧠 AI Upload"])
 
 with tab1:
     df = db.fetch()
     if not df.empty:
-        # --- BỘ LỌC RÁC ---
-        # 1. Lọc theo chỉ số
-        df_filtered = df[
-            (df['play_count'] >= min_views) & 
-            (df['digg_count'] >= min_diggs)
-        ]
+        st.success(f"Đang hiển thị {len(df)} video. Bấm mở từng video để xem trực tiếp như trên trình duyệt.")
         
-        # 2. Lọc theo AI
-        if ai_mode == "🎯 Chỉ lấy Video AI":
-            # Lọc những video có chứa từ khóa AI trong description
-            df_filtered = df_filtered[df_filtered['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
-        elif ai_mode == "🚫 Chặn Video AI":
-            # Lọc bỏ những video chứa từ khóa AI
-            df_filtered = df_filtered[~df_filtered['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
-
-        # HIỂN THỊ KẾT QUẢ
-        st.success(f"🔍 Tìm thấy {len(df_filtered)} / {len(df)} video phù hợp tiêu chí.")
-        
-        if len(df_filtered) == 0:
-            st.warning("Không có video nào thỏa mãn bộ lọc. Hãy giảm tiêu chí 'Tối thiểu View' hoặc đổi Hashtag.")
-        
-        for index, row in df_filtered.iterrows():
+        for index, row in df.iterrows():
             engagement = 0
             if row['play_count'] > 0:
                 engagement = ((row['digg_count'] + row['collect_count']) / row['play_count']) * 100
             
-            # Kiểm tra xem có phải AI không để gắn nhãn
-            is_ai_label = "🤖 AI" if any(x in str(row['description']).lower() for x in AI_KEYWORDS) else ""
-            
-            label = f"{is_ai_label} 🎥 {row['author_name']} | 👀 {row['play_count']:,} | ❤️ {row['digg_count']:,} | ⭐ {row['collect_count']:,}"
+            label = f"🎥 {row['author_name']} | 👀 {row['play_count']:,} | ❤️ {row['digg_count']:,} | ⭐ {row['collect_count']:,}"
             
             with st.expander(label):
-                c1, c2 = st.columns([1.2, 2])
+                c1, c2 = st.columns([1.5, 2])
+                
                 with c1:
-                    try: st.video(row['video_url'])
-                    except: st.warning("Video chặn nhúng.")
-                    st.markdown(f"[🔗 Link TikTok Gốc]({row['video_url']})")
+                    # [QUAN TRỌNG] GỌI HÀM NHÚNG TRÌNH DUYỆT
+                    # Không dùng st.video() nữa, dùng render_tiktok_embed
+                    render_tiktok_embed(row['video_url'], row['video_id'])
+                    
                 with c2:
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Chia sẻ", f"{row['share_count']:,}")
-                    m2.metric("Bình luận", f"{row['comment_count']:,}")
-                    m3.metric("Tương tác", f"{engagement:.2f}%")
-                    st.markdown(f"**📝 Caption:** {row['description']}")
-                    st.caption(f"Nhạc: {row['music_title']} | {row['duration']}s")
+                    st.markdown("#### 📊 Chỉ số chi tiết")
+                    m1, m2 = st.columns(2)
+                    m1.metric("Lượt Lưu", f"{row['collect_count']:,}")
+                    m2.metric("Chia sẻ", f"{row['share_count']:,}")
+                    m3, m4 = st.columns(2)
+                    m3.metric("Bình luận", f"{row['comment_count']:,}")
+                    m4.metric("Tương tác", f"{engagement:.2f}%")
+                    
+                    st.divider()
+                    if row['author_avatar']: st.image(row['author_avatar'], width=50)
+                    st.markdown(f"**{row['author_name']}**")
+                    st.info(f"🎵 {row['music_title']}")
+                    st.write(f"📝 {row['description']}")
     else:
-        st.info("Chưa có dữ liệu. Hãy nhập Token Apify và bấm QUÉT.")
+        st.info("Chưa có dữ liệu. Nhập Token và bấm Quét.")
 
 with tab2:
-    st.markdown("### 📂 Upload Video (Phân tích sâu hơn)")
+    st.markdown("### 📂 Upload Video để AI phân tích")
     up_file = st.file_uploader("Chọn file MP4", type=["mp4"])
     if up_file:
-        c1, c2 = st.columns([1, 1.5])
-        with c1: st.video(up_file)
-        with c2: 
-            if st.button("🔍 Phân tích AI"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
-                    tmp.write(up_file.read()); tmp_path = tmp.name
-                res = analyze_video_file(gemini_tk, tmp_path)
-                st.markdown(f'<div class="analysis-box">{res}</div>', unsafe_allow_html=True)
-                os.remove(tmp_path)
-
-with tab3:
-    if not df.empty:
-        # Vẽ biểu đồ trên tập dữ liệu gốc để có cái nhìn tổng quan
-        fig = px.scatter(df, x='play_count', y='digg_count', size='collect_count', hover_name='author_name', log_x=True, title="Biểu đồ Viral (Bubble = Lượt Lưu)")
-        st.plotly_chart(fig, use_container_width=True)
+        if st.button("🔍 Phân tích ngay"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+                tmp.write(up_file.read()); tmp_path = tmp.name
+            res = analyze_video_file(gemini_tk, tmp_path)
+            st.markdown(f'<div class="analysis-box">{res}</div>', unsafe_allow_html=True)
+            os.remove(tmp_path)
