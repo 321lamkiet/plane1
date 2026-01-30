@@ -15,9 +15,9 @@ from google.genai import types
 import streamlit.components.v1 as components
 
 # ==========================================
-# CẤU HÌNH (v26.0 Trend Hunter)
+# CẤU HÌNH (v27.0 Auto-Refresh Fix)
 # ==========================================
-st.set_page_config(page_title="TikTok OS v26.0", page_icon="🔥", layout="wide")
+st.set_page_config(page_title="TikTok OS v27.0", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
@@ -31,7 +31,7 @@ st.markdown("""
 
 # DATABASE
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v26_trend.db"): 
+    def __init__(self, db_name="tiktok_v27_fix.db"): 
         self.db_name = db_name
         self.init_db()
     @contextlib.contextmanager
@@ -43,22 +43,10 @@ class DatabaseEngine:
     def init_db(self):
         with self.get_connection() as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS videos (
-                video_id TEXT PRIMARY KEY, 
-                author_name TEXT, 
-                author_avatar TEXT,
-                description TEXT, 
-                video_url TEXT, 
-                download_url TEXT,
-                play_count INTEGER,
-                digg_count INTEGER,
-                share_count INTEGER,
-                comment_count INTEGER,
-                collect_count INTEGER,
-                duration INTEGER,
-                music_title TEXT,
-                posted_at DATETIME, 
-                velocity REAL,
-                created_at TIMESTAMP
+                video_id TEXT PRIMARY KEY, author_name TEXT, author_avatar TEXT, description TEXT, 
+                video_url TEXT, download_url TEXT, play_count INTEGER, digg_count INTEGER, 
+                share_count INTEGER, comment_count INTEGER, collect_count INTEGER, duration INTEGER, 
+                music_title TEXT, posted_at DATETIME, velocity REAL, created_at TIMESTAMP
             )""")
             conn.commit()
 
@@ -69,75 +57,62 @@ class DatabaseEngine:
         v_meta = item.get('videoMeta', {})
         m_meta = item.get('musicMeta', {})
         
-        # Xử lý thời gian
         try:
-            # Apify trả về createTimeISO dạng "2024-01-30T10:00:00.000Z"
             create_time_str = item.get('createTimeISO', '')
-            if create_time_str:
-                posted_dt = datetime.fromisoformat(create_time_str.replace('Z', '+00:00'))
-            else:
-                posted_dt = datetime.now(pytz.utc)
-        except:
-            posted_dt = datetime.now(pytz.utc)
+            if create_time_str: posted_dt = datetime.fromisoformat(create_time_str.replace('Z', '+00:00'))
+            else: posted_dt = datetime.now(pytz.utc)
+        except: posted_dt = datetime.now(pytz.utc)
 
-        # Tính tốc độ (Velocity) = View / Số giờ đã đăng
-        hours_since_posted = (datetime.now(pytz.utc) - posted_dt).total_seconds() / 3600
-        velocity = item.get('playCount', 0) / max(1, hours_since_posted)
-
+        hours_since = (datetime.now(pytz.utc) - posted_dt).total_seconds() / 3600
+        velocity = item.get('playCount', 0) / max(1, hours_since)
         dl_url = v_meta.get('downloadAddr', '')
         
         with self.get_connection() as conn:
             conn.execute("""INSERT OR REPLACE INTO videos VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", 
-                         (
-                             vid,
-                             a_meta.get('name', 'Unknown'),
-                             a_meta.get('avatar', ''),
-                             item.get('text', ''),
-                             item.get('webVideoUrl', ''),
-                             dl_url,
-                             item.get('playCount', 0),
-                             item.get('diggCount', 0),
-                             item.get('shareCount', 0),
-                             item.get('commentCount', 0),
-                             item.get('collectCount', 0),
-                             v_meta.get('duration', 0),
-                             m_meta.get('musicName', 'Original Sound'),
-                             posted_dt, # Lưu datetime chuẩn
-                             velocity,  # Tốc độ Viral
-                             datetime.now()
-                         ))
+                         (vid, a_meta.get('name', 'Unknown'), a_meta.get('avatar', ''), item.get('text', ''), 
+                          item.get('webVideoUrl', ''), dl_url, item.get('playCount', 0), item.get('diggCount', 0), 
+                          item.get('shareCount', 0), item.get('commentCount', 0), item.get('collectCount', 0), 
+                          v_meta.get('duration', 0), m_meta.get('musicName', 'Original Sound'), posted_dt, velocity, datetime.now()))
             conn.commit()
             
     def fetch(self):
         with self.get_connection() as conn: 
-            # Đọc lên và parse cột posted_at thành datetime
             df = pd.read_sql("SELECT * FROM videos", conn)
-            df['posted_at'] = pd.to_datetime(df['posted_at'])
+            if not df.empty: df['posted_at'] = pd.to_datetime(df['posted_at'])
             return df
 
 db = DatabaseEngine()
 
-# LOGIC QUÉT
-def run_scan(token, tags, limit):
-    if not token: return False, "Thiếu Token Apify!"
+# LOGIC QUÉT (Đã tối ưu cho Callback)
+def run_scan_logic(token, tags, limit):
+    if not token: return False, "⚠️ Thiếu Token Apify!"
     client = ApifyClient(token)
     tag_list = [t.strip() for t in tags.split(',') if t.strip()]
     try:
-        run_input = {
-            "hashtags": tag_list, 
-            "resultsPerPage": limit, 
-            "searchSection": "",
-            "proxyConfiguration": {"useApifyProxy": True}
-        }
+        # Gửi thông báo đang chạy (nhưng ko dùng st.status để tránh lỗi)
+        run_input = {"hashtags": tag_list, "resultsPerPage": limit, "searchSection": "", "proxyConfiguration": {"useApifyProxy": True}}
         run = client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
-        if not run: return False, "Lỗi Actor."
+        if not run: return False, "❌ Lỗi Actor Apify."
         items = client.dataset(run['defaultDatasetId']).list_items().items
-        if not items: return False, "Không có video."
+        if not items: return False, "⚠️ Không tìm thấy video nào."
+        
         count = 0
         for item in items:
             db.upsert_video(item); count += 1
-        return True, f"Đã lấy {count} video!"
-    except Exception as e: return False, f"Lỗi: {str(e)}"
+        return True, f"✅ Đã cập nhật thành công {count} video!"
+    except Exception as e: return False, f"❌ Lỗi: {str(e)}"
+
+# HÀM CALLBACK (CHÌA KHÓA FIX LỖI CỦA BẠN)
+def on_scan_click():
+    # Lấy giá trị từ session state (do input chưa kịp submit)
+    token = st.session_state.get("api_input", "")
+    tags = st.session_state.get("tag_input", "")
+    limit = st.session_state.get("limit_input", 10)
+    
+    with st.spinner("⏳ Đang quét dữ liệu... Vui lòng đợi..."):
+        success, msg = run_scan_logic(token, tags, limit)
+        # Lưu thông báo vào Session State để hiển thị sau khi reload
+        st.session_state['scan_status'] = {'success': success, 'message': msg}
 
 # LOGIC AI
 def analyze_video_file(api_key, video_path):
@@ -167,36 +142,35 @@ def render_tiktok_embed(video_url, video_id):
     """
     components.html(embed_code, height=750, scrolling=True)
 
-# SIDEBAR - BỘ LỌC AFFILIATE
+# SIDEBAR
 with st.sidebar:
     st.header("🔑 Cấu hình")
-    apify_tk = st.text_input("Apify Token", type="password")
+    # Gắn key để dùng trong Callback
+    apify_tk = st.text_input("Apify Token", type="password", key="api_input")
     gemini_tk = st.text_input("Gemini API Key", type="password")
     
     st.divider()
-    st.subheader("🎯 Bộ Lọc Affiliate")
+    st.subheader("🎯 Bộ Lọc")
     
-    # 1. Lọc theo thời gian đăng (QUAN TRỌNG)
-    time_filter = st.selectbox("📅 Thời gian đăng:", 
-                               ["Tất cả", "24 Giờ qua", "3 Ngày qua", "7 Ngày qua", "30 Ngày qua"],
-                               index=0, help="Chỉ lấy video mới đăng để bắt trend")
-    
-    # 2. Lọc theo chỉ số
+    time_filter = st.selectbox("📅 Thời gian đăng:", ["Tất cả", "24 Giờ qua", "3 Ngày qua", "7 Ngày qua", "30 Ngày qua"], index=0)
     min_views = st.number_input("Tối thiểu View:", value=1000, step=1000)
-    min_engagement = st.slider("Tỷ lệ tương tác tối thiểu (%):", 0.0, 20.0, 1.0, help="(Tim+Lưu)/View")
-    
-    # 3. Lọc AI
+    min_engagement = st.slider("Tương tác tối thiểu (%):", 0.0, 20.0, 1.0)
     ai_mode = st.radio("Chế độ AI:", ["🌐 Tất cả", "🎯 Chỉ lấy Video AI", "🚫 Chặn Video AI"])
     
     st.divider()
-    tags = st.text_input("Hashtags", "shilajit, amazonfinds")
-    limit = st.slider("Số lượng quét", 10, 100, 20)
+    tags = st.text_input("Hashtags", "shilajit, amazonfinds", key="tag_input")
+    limit = st.slider("Số lượng quét", 10, 100, 20, key="limit_input")
     
-    if st.button("🚀 QUÉT MỚI", type="primary"):
-        with st.status("Đang quét..."):
-            s, m = run_scan(apify_tk, tags, limit)
-            if s: st.success(m); time.sleep(1); st.rerun()
-            else: st.error(m)
+    # NÚT BẤM DÙNG CALLBACK (FIX LỖI)
+    st.button("🚀 QUÉT MỚI", type="primary", on_click=on_scan_click)
+    
+    # Hiển thị thông báo sau khi reload
+    if 'scan_status' in st.session_state:
+        status = st.session_state['scan_status']
+        if status['success']: st.success(status['message'])
+        else: st.error(status['message'])
+        # Xóa thông báo để không hiện mãi
+        del st.session_state['scan_status']
 
 # MAIN TABS
 tab1, tab2, tab3 = st.tabs(["🔥 Danh sách Video (Trend Hunter)", "🧠 AI Upload", "📊 Biểu đồ"])
@@ -205,33 +179,21 @@ AI_KEYWORDS = ['#ai', 'ai art', 'generated', 'midjourney', 'chatgpt', 'openai', 
 with tab1:
     df = db.fetch()
     if not df.empty:
-        # TÍNH TOÁN CHỈ SỐ
         df['engagement_rate'] = ((df['digg_count'] + df['collect_count']) / df['play_count'] * 100).fillna(0)
         
-        # --- LOGIC LỌC THỜI GIAN ---
         now = datetime.now(pytz.utc)
-        if time_filter == "24 Giờ qua":
-            df = df[df['posted_at'] >= (now - pd.Timedelta(hours=24))]
-        elif time_filter == "3 Ngày qua":
-            df = df[df['posted_at'] >= (now - pd.Timedelta(days=3))]
-        elif time_filter == "7 Ngày qua":
-            df = df[df['posted_at'] >= (now - pd.Timedelta(days=7))]
-        elif time_filter == "30 Ngày qua":
-            df = df[df['posted_at'] >= (now - pd.Timedelta(days=30))]
+        if time_filter == "24 Giờ qua": df = df[df['posted_at'] >= (now - pd.Timedelta(hours=24))]
+        elif time_filter == "3 Ngày qua": df = df[df['posted_at'] >= (now - pd.Timedelta(days=3))]
+        elif time_filter == "7 Ngày qua": df = df[df['posted_at'] >= (now - pd.Timedelta(days=7))]
+        elif time_filter == "30 Ngày qua": df = df[df['posted_at'] >= (now - pd.Timedelta(days=30))]
 
-        # LỌC CHỈ SỐ
-        df = df[
-            (df['play_count'] >= min_views) & 
-            (df['engagement_rate'] >= min_engagement)
-        ]
+        df = df[(df['play_count'] >= min_views) & (df['engagement_rate'] >= min_engagement)]
         
-        # LỌC AI
         if ai_mode == "🎯 Chỉ lấy Video AI":
             df = df[df['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
         elif ai_mode == "🚫 Chặn Video AI":
             df = df[~df['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
             
-        # SẮP XẾP
         sort_opt = st.selectbox("Sắp xếp theo:", ["🔥 Tốc độ Viral (View/Giờ)", "👀 Nhiều View Nhất", "❤️ Nhiều Tim Nhất", "📅 Mới Nhất"])
         if sort_opt == "🔥 Tốc độ Viral (View/Giờ)": df = df.sort_values(by='velocity', ascending=False)
         elif sort_opt == "👀 Nhiều View Nhất": df = df.sort_values(by='play_count', ascending=False)
@@ -244,7 +206,6 @@ with tab1:
             is_ai = "🤖 AI" if any(k in str(row['description']).lower() for k in AI_KEYWORDS) else ""
             posted_str = row['posted_at'].strftime("%Y-%m-%d %H:%M")
             velocity_str = f"{row['velocity']:.0f} view/h"
-            
             label = f"{is_ai} 🎥 {row['author_name']} | 🔥 {velocity_str} | 👀 {row['play_count']:,} | 📅 {posted_str}"
             
             with st.expander(label):
@@ -254,7 +215,6 @@ with tab1:
                     st.link_button("👉 Mở trên TikTok", row['video_url'], type="primary", use_container_width=True)
                     if row['download_url']:
                          st.markdown(f'<a href="{row["download_url"]}" target="_blank" class="download-btn">📥 Tải Video (Gốc)</a>', unsafe_allow_html=True)
-
                 with c2:
                     st.markdown("#### 📊 Chỉ số Affiliate")
                     m1, m2 = st.columns(2)
@@ -263,13 +223,12 @@ with tab1:
                     m3, m4 = st.columns(2)
                     m3.metric("Bình luận", f"{row['comment_count']:,}")
                     m4.metric("Tương tác", f"{row['engagement_rate']:.2f}%")
-                    
                     st.divider()
                     st.info(f"📅 **Ngày đăng:** {posted_str}")
                     st.info(f"🚀 **Tốc độ:** {velocity_str}")
                     st.write(f"📝 **Caption:** {row['description']}")
     else:
-        st.info("Chưa có dữ liệu. Hãy nhập Token và bấm Quét.")
+        st.info("Chưa có dữ liệu. Nhập Token và bấm Quét.")
 
 with tab2:
     st.markdown("### 📂 Upload Video AI")
