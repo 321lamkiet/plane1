@@ -9,15 +9,15 @@ import contextlib
 import pytz
 import os
 import tempfile
-import requests # Dùng để tải video
+import requests
 from google import genai
 from google.genai import types
 import streamlit.components.v1 as components
 
 # ==========================================
-# CẤU HÌNH (v25.0 All-in-One)
+# CẤU HÌNH (v26.0 Trend Hunter)
 # ==========================================
-st.set_page_config(page_title="TikTok OS v25.0", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="TikTok OS v26.0", page_icon="🔥", layout="wide")
 
 st.markdown("""
 <style>
@@ -25,14 +25,13 @@ st.markdown("""
    div[data-testid="stMetric"] { background-color: #1F2937; border: 1px solid #374151; border-radius: 8px; padding: 10px; }
    div[data-testid="stMetricValue"] { font-size: 20px; color: #34D399; }
    .analysis-box { background-color: #1F2937; padding: 20px; border-radius: 10px; border: 1px solid #374151; margin-top: 10px; }
-   /* Style cho nút tải */
-   .download-btn { text-decoration: none; display: inline-block; color: white; background-color: #2563EB; padding: 8px 16px; border-radius: 5px; text-align: center; }
+   .download-btn { text-decoration: none; display: inline-block; color: white; background-color: #2563EB; padding: 6px 12px; border-radius: 4px; font-size: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
-# DATABASE (THÊM CỘT NGÀY ĐĂNG)
+# DATABASE
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v25_power.db"): 
+    def __init__(self, db_name="tiktok_v26_trend.db"): 
         self.db_name = db_name
         self.init_db()
     @contextlib.contextmanager
@@ -57,7 +56,8 @@ class DatabaseEngine:
                 collect_count INTEGER,
                 duration INTEGER,
                 music_title TEXT,
-                posted_at TEXT, 
+                posted_at DATETIME, 
+                velocity REAL,
                 created_at TIMESTAMP
             )""")
             conn.commit()
@@ -69,22 +69,32 @@ class DatabaseEngine:
         v_meta = item.get('videoMeta', {})
         m_meta = item.get('musicMeta', {})
         
-        # Xử lý ngày đăng (Posted Date)
-        raw_date = item.get('createTimeISO', '')
-        posted_at = raw_date[:10] if raw_date else "N/A" # Lấy YYYY-MM-DD
-        
-        # Link tải (Ưu tiên link downloadAddr từ Apify)
+        # Xử lý thời gian
+        try:
+            # Apify trả về createTimeISO dạng "2024-01-30T10:00:00.000Z"
+            create_time_str = item.get('createTimeISO', '')
+            if create_time_str:
+                posted_dt = datetime.fromisoformat(create_time_str.replace('Z', '+00:00'))
+            else:
+                posted_dt = datetime.now(pytz.utc)
+        except:
+            posted_dt = datetime.now(pytz.utc)
+
+        # Tính tốc độ (Velocity) = View / Số giờ đã đăng
+        hours_since_posted = (datetime.now(pytz.utc) - posted_dt).total_seconds() / 3600
+        velocity = item.get('playCount', 0) / max(1, hours_since_posted)
+
         dl_url = v_meta.get('downloadAddr', '')
         
         with self.get_connection() as conn:
-            conn.execute("""INSERT OR REPLACE INTO videos VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", 
+            conn.execute("""INSERT OR REPLACE INTO videos VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", 
                          (
                              vid,
                              a_meta.get('name', 'Unknown'),
                              a_meta.get('avatar', ''),
                              item.get('text', ''),
                              item.get('webVideoUrl', ''),
-                             dl_url, # Link download
+                             dl_url,
                              item.get('playCount', 0),
                              item.get('diggCount', 0),
                              item.get('shareCount', 0),
@@ -92,16 +102,22 @@ class DatabaseEngine:
                              item.get('collectCount', 0),
                              v_meta.get('duration', 0),
                              m_meta.get('musicName', 'Original Sound'),
-                             posted_at, # Ngày đăng thực tế
+                             posted_dt, # Lưu datetime chuẩn
+                             velocity,  # Tốc độ Viral
                              datetime.now()
                          ))
             conn.commit()
+            
     def fetch(self):
-        with self.get_connection() as conn: return pd.read_sql("SELECT * FROM videos", conn)
+        with self.get_connection() as conn: 
+            # Đọc lên và parse cột posted_at thành datetime
+            df = pd.read_sql("SELECT * FROM videos", conn)
+            df['posted_at'] = pd.to_datetime(df['posted_at'])
+            return df
 
 db = DatabaseEngine()
 
-# LOGIC QUÉT APIFY
+# LOGIC QUÉT
 def run_scan(token, tags, limit):
     if not token: return False, "Thiếu Token Apify!"
     client = ApifyClient(token)
@@ -141,17 +157,7 @@ def analyze_video_file(api_key, video_path):
         return response.text
     except Exception as e: return f"Lỗi AI: {str(e)}"
 
-# HÀM DOWNLOAD VIDEO
-def get_video_bytes(url):
-    try:
-        # Giả lập header trình duyệt để tránh 403 Forbidden
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        r = requests.get(url, headers=headers, stream=True, timeout=10)
-        if r.status_code == 200: return r.content
-    except: pass
-    return None
-
-# HÀM NHÚNG TRÌNH DUYỆT
+# NHÚNG TRÌNH DUYỆT
 def render_tiktok_embed(video_url, video_id):
     embed_code = f"""
     <blockquote class="tiktok-embed" cite="{video_url}" data-video-id="{video_id}" style="max-width: 100%;min-width: 325px;" >
@@ -161,104 +167,109 @@ def render_tiktok_embed(video_url, video_id):
     """
     components.html(embed_code, height=750, scrolling=True)
 
-# SIDEBAR
+# SIDEBAR - BỘ LỌC AFFILIATE
 with st.sidebar:
     st.header("🔑 Cấu hình")
     apify_tk = st.text_input("Apify Token", type="password")
     gemini_tk = st.text_input("Gemini API Key", type="password")
     
     st.divider()
+    st.subheader("🎯 Bộ Lọc Affiliate")
     
-    # [TÍNH NĂNG MỚI] XUẤT FILE
-    if st.button("📥 Xuất Excel (Backup)", use_container_width=True):
-        df_export = db.fetch()
-        if not df_export.empty:
-            st.download_button("Bấm để tải CSV", df_export.to_csv(index=False).encode('utf-8'), "tiktok_data.csv", "text/csv")
-        else: st.warning("Chưa có dữ liệu.")
-            
-    st.divider()
+    # 1. Lọc theo thời gian đăng (QUAN TRỌNG)
+    time_filter = st.selectbox("📅 Thời gian đăng:", 
+                               ["Tất cả", "24 Giờ qua", "3 Ngày qua", "7 Ngày qua", "30 Ngày qua"],
+                               index=0, help="Chỉ lấy video mới đăng để bắt trend")
     
-    st.header("🧹 Bộ Lọc & Tìm kiếm")
+    # 2. Lọc theo chỉ số
     min_views = st.number_input("Tối thiểu View:", value=1000, step=1000)
-    min_diggs = st.number_input("Tối thiểu Tim:", value=50, step=50)
-    ai_mode = st.radio("Chế độ lọc:", ["🌐 Tất cả", "🎯 Chỉ lấy Video AI", "🚫 Chặn Video AI"])
+    min_engagement = st.slider("Tỷ lệ tương tác tối thiểu (%):", 0.0, 20.0, 1.0, help="(Tim+Lưu)/View")
+    
+    # 3. Lọc AI
+    ai_mode = st.radio("Chế độ AI:", ["🌐 Tất cả", "🎯 Chỉ lấy Video AI", "🚫 Chặn Video AI"])
     
     st.divider()
     tags = st.text_input("Hashtags", "shilajit, amazonfinds")
-    limit = st.slider("Số lượng quét", 5, 100, 10)
+    limit = st.slider("Số lượng quét", 10, 100, 20)
     
-    if st.button("🚀 QUÉT NGAY", type="primary"):
+    if st.button("🚀 QUÉT MỚI", type="primary"):
         with st.status("Đang quét..."):
             s, m = run_scan(apify_tk, tags, limit)
             if s: st.success(m); time.sleep(1); st.rerun()
             else: st.error(m)
 
-# TABS
-tab1, tab2, tab3 = st.tabs(["🔥 Danh sách Video", "🧠 AI Upload", "📊 Biểu đồ"])
+# MAIN TABS
+tab1, tab2, tab3 = st.tabs(["🔥 Danh sách Video (Trend Hunter)", "🧠 AI Upload", "📊 Biểu đồ"])
 AI_KEYWORDS = ['#ai', 'ai art', 'generated', 'midjourney', 'chatgpt', 'openai', 'artificial']
 
 with tab1:
     df = db.fetch()
     if not df.empty:
-        # [TÍNH NĂNG MỚI] SẮP XẾP
-        sort_opt = st.selectbox("Sắp xếp theo:", ["Nhiều View Nhất", "Nhiều Tim Nhất", "Mới Nhất (Ngày đăng)"])
+        # TÍNH TOÁN CHỈ SỐ
+        df['engagement_rate'] = ((df['digg_count'] + df['collect_count']) / df['play_count'] * 100).fillna(0)
         
-        if sort_opt == "Nhiều View Nhất": df = df.sort_values(by='play_count', ascending=False)
-        elif sort_opt == "Nhiều Tim Nhất": df = df.sort_values(by='digg_count', ascending=False)
-        elif sort_opt == "Mới Nhất (Ngày đăng)": df = df.sort_values(by='posted_at', ascending=False)
+        # --- LOGIC LỌC THỜI GIAN ---
+        now = datetime.now(pytz.utc)
+        if time_filter == "24 Giờ qua":
+            df = df[df['posted_at'] >= (now - pd.Timedelta(hours=24))]
+        elif time_filter == "3 Ngày qua":
+            df = df[df['posted_at'] >= (now - pd.Timedelta(days=3))]
+        elif time_filter == "7 Ngày qua":
+            df = df[df['posted_at'] >= (now - pd.Timedelta(days=7))]
+        elif time_filter == "30 Ngày qua":
+            df = df[df['posted_at'] >= (now - pd.Timedelta(days=30))]
 
-        # LỌC
-        df_filtered = df[(df['play_count'] >= min_views) & (df['digg_count'] >= min_diggs)]
+        # LỌC CHỈ SỐ
+        df = df[
+            (df['play_count'] >= min_views) & 
+            (df['engagement_rate'] >= min_engagement)
+        ]
+        
+        # LỌC AI
         if ai_mode == "🎯 Chỉ lấy Video AI":
-            df_filtered = df_filtered[df_filtered['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
+            df = df[df['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
         elif ai_mode == "🚫 Chặn Video AI":
-            df_filtered = df_filtered[~df_filtered['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
+            df = df[~df['description'].str.lower().str.contains('|'.join(AI_KEYWORDS), na=False)]
             
-        st.success(f"Hiển thị {len(df_filtered)} video (Sắp xếp: {sort_opt})")
+        # SẮP XẾP
+        sort_opt = st.selectbox("Sắp xếp theo:", ["🔥 Tốc độ Viral (View/Giờ)", "👀 Nhiều View Nhất", "❤️ Nhiều Tim Nhất", "📅 Mới Nhất"])
+        if sort_opt == "🔥 Tốc độ Viral (View/Giờ)": df = df.sort_values(by='velocity', ascending=False)
+        elif sort_opt == "👀 Nhiều View Nhất": df = df.sort_values(by='play_count', ascending=False)
+        elif sort_opt == "❤️ Nhiều Tim Nhất": df = df.sort_values(by='digg_count', ascending=False)
+        elif sort_opt == "📅 Mới Nhất": df = df.sort_values(by='posted_at', ascending=False)
 
-        for index, row in df_filtered.iterrows():
-            engagement = 0
-            if row['play_count'] > 0:
-                engagement = ((row['digg_count'] + row['collect_count']) / row['play_count']) * 100
-            
+        st.success(f"🔍 Tìm thấy {len(df)} video phù hợp.")
+
+        for index, row in df.iterrows():
             is_ai = "🤖 AI" if any(k in str(row['description']).lower() for k in AI_KEYWORDS) else ""
-            # Tiêu đề thêm Ngày đăng
-            label = f"{is_ai} 🎥 {row['author_name']} ({row['posted_at']}) | 👀 {row['play_count']:,} | ❤️ {row['digg_count']:,}"
+            posted_str = row['posted_at'].strftime("%Y-%m-%d %H:%M")
+            velocity_str = f"{row['velocity']:.0f} view/h"
+            
+            label = f"{is_ai} 🎥 {row['author_name']} | 🔥 {velocity_str} | 👀 {row['play_count']:,} | 📅 {posted_str}"
             
             with st.expander(label):
                 c1, c2 = st.columns([1.5, 2])
                 with c1:
                     render_tiktok_embed(row['video_url'], row['video_id'])
-                    
-                    # NÚT TRUY CẬP NHANH
                     st.link_button("👉 Mở trên TikTok", row['video_url'], type="primary", use_container_width=True)
-                    
-                    # [TÍNH NĂNG MỚI] NÚT DOWNLOAD
-                    # Lưu ý: Nếu link download bị lỗi (do TikTok chặn), hãy dùng web ngoài.
                     if row['download_url']:
-                         st.markdown(f'<a href="{row["download_url"]}" target="_blank" class="download-btn">📥 Tải Video (Link Gốc)</a>', unsafe_allow_html=True)
-                    else:
-                        st.caption("Link tải trực tiếp không khả dụng. Hãy dùng SnapTik.")
+                         st.markdown(f'<a href="{row["download_url"]}" target="_blank" class="download-btn">📥 Tải Video (Gốc)</a>', unsafe_allow_html=True)
 
                 with c2:
-                    st.markdown("#### 📊 Chỉ số chi tiết")
+                    st.markdown("#### 📊 Chỉ số Affiliate")
                     m1, m2 = st.columns(2)
                     m1.metric("Lượt Lưu", f"{row['collect_count']:,}")
                     m2.metric("Chia sẻ", f"{row['share_count']:,}")
                     m3, m4 = st.columns(2)
                     m3.metric("Bình luận", f"{row['comment_count']:,}")
-                    m4.metric("Tương tác", f"{engagement:.2f}%")
+                    m4.metric("Tương tác", f"{row['engagement_rate']:.2f}%")
                     
                     st.divider()
-                    if row['author_avatar']: st.image(row['author_avatar'], width=50)
-                    st.markdown(f"**{row['author_name']}**")
-                    st.info(f"📅 **Ngày đăng:** {row['posted_at']}")
-                    st.info(f"🎵 {row['music_title']}")
-                    
-                    # Copy Caption nhanh
-                    st.text_area("Caption (Copy tại đây):", row['description'], height=100)
+                    st.info(f"📅 **Ngày đăng:** {posted_str}")
+                    st.info(f"🚀 **Tốc độ:** {velocity_str}")
+                    st.write(f"📝 **Caption:** {row['description']}")
     else:
-        st.info("Chưa có dữ liệu.")
+        st.info("Chưa có dữ liệu. Hãy nhập Token và bấm Quét.")
 
 with tab2:
     st.markdown("### 📂 Upload Video AI")
@@ -273,5 +284,5 @@ with tab2:
 
 with tab3:
     if not df.empty:
-        fig = px.scatter(df, x='play_count', y='digg_count', size='collect_count', hover_name='author_name', log_x=True, title="Biểu đồ Viral")
+        fig = px.scatter(df, x='posted_at', y='velocity', size='play_count', color='engagement_rate', hover_name='author_name', title="Biểu đồ: Ngày đăng vs Tốc độ Viral")
         st.plotly_chart(fig, use_container_width=True)
