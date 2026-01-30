@@ -8,26 +8,28 @@ import time
 import contextlib
 import pytz
 from google import genai
-import streamlit.components.v1 as components
+from google.genai import types
+import os
+import tempfile
 import urllib.parse
-import requests
 
 # ==========================================
-# CẤU HÌNH (v14.1 Clean Ultimate)
+# CẤU HÌNH (v15.1 Final Ultimate)
 # ==========================================
-st.set_page_config(page_title="TikTok OS v14.1", page_icon="💎", layout="wide")
+st.set_page_config(page_title="TikTok OS v15.1", page_icon="🛡️", layout="wide")
 
 st.markdown("""
 <style>
    .stApp { background-color: #0E1117; }
    div[data-testid="stMetric"] { background-color: #1F2937; border: 1px solid #374151; border-radius: 8px; padding: 15px; }
    div[data-testid="stMetricValue"] { font-size: 24px; color: #34D399; }
+   .analysis-box { background-color: #1F2937; padding: 20px; border-radius: 10px; border: 1px solid #374151; margin-top: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
-# DATABASE
+# DATABASE ENGINE
 class DatabaseEngine:
-    def __init__(self, db_name="tiktok_v141_clean.db"): 
+    def __init__(self, db_name="tiktok_final_safe.db"): 
         self.db_name = db_name
         self.init_db()
     @contextlib.contextmanager
@@ -38,185 +40,103 @@ class DatabaseEngine:
         finally: conn.close()
     def init_db(self):
         with self.get_connection() as conn:
-            conn.execute("""CREATE TABLE IF NOT EXISTS videos (video_id TEXT PRIMARY KEY, author_name TEXT, author_followers INTEGER, description TEXT, video_url TEXT, thumbnail_url TEXT, music_title TEXT, music_author TEXT, is_saved INTEGER DEFAULT 0, created_at INTEGER, last_scraped_at TIMESTAMP, current_views INTEGER, current_shares INTEGER, velocity_value REAL, velocity_type TEXT, ai_analysis TEXT)""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS metrics (id INTEGER PRIMARY KEY, video_id TEXT, play_count INTEGER, share_count INTEGER, scraped_at TIMESTAMP)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS videos (video_id TEXT PRIMARY KEY, author_name TEXT, author_followers INTEGER, description TEXT, video_url TEXT, thumbnail_url TEXT, music_title TEXT, music_author TEXT, is_saved INTEGER DEFAULT 0, created_at INTEGER, last_scraped_at TIMESTAMP, current_views INTEGER, current_shares INTEGER, velocity_value REAL, velocity_type TEXT)""")
             conn.commit()
-    def get_last_metric(self, video_id):
-        with self.get_connection() as conn: return conn.execute("SELECT play_count, scraped_at FROM metrics WHERE video_id =? ORDER BY scraped_at DESC LIMIT 1", (video_id,)).fetchone()
-    
     def upsert_video(self, data, vel, v_type):
         vid_id = data.get('id'); author = data.get('authorMeta', {}).get('name', 'Unknown')
         if not vid_id: return
-        
-        # Lấy link MP4 trực tiếp
-        download_url = data.get('videoMeta', {}).get('downloadAddr', '')
-        web_url = data.get('webVideoUrl', '')
-        final_url = download_url if download_url else web_url
-
         with self.get_connection() as conn:
-            conn.execute("INSERT OR REPLACE INTO videos VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT ai_analysis FROM videos WHERE video_id=?), NULL))", 
-                         (vid_id, author, data.get('authorMeta', {}).get('fans', 0), data.get('text', ''), final_url, data.get('videoMeta', {}).get('coverUrl', ''), data.get('musicMeta', {}).get('musicName', ''), data.get('musicMeta', {}).get('musicAuthor', ''), 0, int(time.time()), datetime.now(), data.get('playCount', 0), data.get('shareCount', 0), vel, v_type, vid_id))
-            conn.execute("INSERT INTO metrics (video_id, play_count, share_count, scraped_at) VALUES (?,?,?,?)", (vid_id, data.get('playCount', 0), data.get('shareCount', 0), datetime.now()))
+            conn.execute("INSERT OR REPLACE INTO videos VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", 
+                         (vid_id, author, data.get('authorMeta', {}).get('fans', 0), data.get('text', ''), data.get('webVideoUrl', ''), data.get('videoMeta', {}).get('coverUrl', ''), data.get('musicMeta', {}).get('musicName', ''), data.get('musicMeta', {}).get('musicAuthor', ''), 0, int(time.time()), datetime.now(), data.get('playCount', 0), data.get('shareCount', 0), vel, v_type))
             conn.commit()
-
-    def update_ai(self, vid, txt):
-        with self.get_connection() as conn: conn.execute("UPDATE videos SET ai_analysis=? WHERE video_id=?", (txt, vid)); conn.commit()
-    def toggle_save(self, vid, status):
-        with self.get_connection() as conn: conn.execute("UPDATE videos SET is_saved=? WHERE video_id=?", (0 if status==1 else 1, vid)); conn.commit()
     def fetch(self, saved=False):
         with self.get_connection() as conn: return pd.read_sql(f"SELECT * FROM videos {'WHERE is_saved=1' if saved else ''} ORDER BY velocity_value DESC", conn)
 
 db = DatabaseEngine()
 
-# LOGIC TÍNH TOÁN
-def calc_vel(item):
-    prev = db.get_last_metric(item['id'])
-    curr_views = item.get('playCount', 0); now = datetime.now()
-    if prev:
-        hours = (now - pd.to_datetime(prev[1])).total_seconds() / 3600.0
-        if hours > 0.05: return round(max(0, curr_views - prev[0]) / hours, 1), "⚡ Thực"
-    age = max(1.0, (now - datetime.fromtimestamp(item.get('createTime', 0))).total_seconds() / 3600.0)
-    return round(curr_views / age, 1), "🆕 Dự báo"
-
-# LOGIC QUÉT
-def run_scan(token, tags, limit, country, filter_mode, ai_keys, proxy, separate_search):
+# LOGIC QUÉT DỮ LIỆU
+def run_scan(token, tags, limit, country, separate_search):
     if not token: return False, "Thiếu Token!"
     client = ApifyClient(token)
-    p_config = {"useApifyProxy": True}
-    if proxy: p_config = {"useApifyProxy": False, "proxyUrls": [proxy]}
-    elif country != "ALL": p_config = {"useApifyProxy": True, "apifyProxyCountry": country}
-    
     tag_list = [t.strip() for t in tags.split(',') if t.strip()]
-    if not tag_list: return False, "Chưa nhập Hashtag!"
-
-    total_videos = 0
     
-    if separate_search:
-        status_box = st.empty()
-        for i, tag in enumerate(tag_list):
-            status_box.info(f"⏳ Đang quét từ khóa [{i+1}/{len(tag_list)}]: '{tag}'...")
-            try:
-                run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": [tag], "resultsPerPage": limit, "proxyConfiguration": p_config, "searchSection": ""})
-                if not run: continue
-                items = client.dataset(run['defaultDatasetId']).list_items().items
-                
-                count = 0
-                for item in items:
-                    is_ai = any(k in item.get('text', '').lower() for k in ai_keys.split(',')) if ai_keys else False
-                    if (filter_mode == "🎯 Chỉ lấy Video AI" and not is_ai) or (filter_mode == "🚫 Chặn Video AI" and is_ai): continue
-                    
-                    v, t = calc_vel(item); db.upsert_video(item, v, t); count += 1
-                total_videos += count
-            except: pass
-        status_box.empty()
-        return True, f"✅ Tổng cộng: {total_videos} video."
-    else:
-        try:
-            run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": tag_list, "resultsPerPage": limit, "proxyConfiguration": p_config, "searchSection": ""})
-            items = client.dataset(run['defaultDatasetId']).list_items().items
-            if not items: return False, "Không có video."
-            count = 0
-            for item in items:
-                is_ai = any(k in item.get('text', '').lower() for k in ai_keys.split(',')) if ai_keys else False
-                if (filter_mode == "🎯 Chỉ lấy Video AI" and not is_ai) or (filter_mode == "🚫 Chặn Video AI" and is_ai): continue
-                v, t = calc_vel(item); db.upsert_video(item, v, t); count += 1
-            return True, f"✅ Đã lưu {count} video."
-        except Exception as e: return False, str(e)
-
-# AI GOOGLE GENAI
-def run_gemini(key, desc, auth):
-    if not key: return "⚠️ Thiếu API Key"
     try:
-        client = genai.Client(api_key=key)
-        try:
-            return client.models.generate_content(model="gemini-2.0-flash", contents=f"Phân tích ngắn gọn video TikTok: Tác giả {auth}, Caption: {desc}. 3 ý: Hook (Câu dẫn), Pain Point (Nỗi đau), Remake Idea (Ý tưởng làm lại).").text
-        except:
+        if separate_search:
+            for tag in tag_list:
+                run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": [tag], "resultsPerPage": limit, "proxyConfiguration": {"useApifyProxy": True, "apifyProxyCountry": country if country != "ALL" else "US"}})
+                items = client.dataset(run['defaultDatasetId']).list_items().items
+                for item in items: db.upsert_video(item, item.get('playCount', 0)/1000, "⚡")
+        else:
+            run = client.actor("clockworks/tiktok-scraper").call(run_input={"hashtags": tag_list, "resultsPerPage": limit, "proxyConfiguration": {"useApifyProxy": True, "apifyProxyCountry": country if country != "ALL" else "US"}})
+            items = client.dataset(run['defaultDatasetId']).list_items().items
+            for item in items: db.upsert_video(item, item.get('playCount', 0)/1000, "⚡")
+        return True, "Cập nhật dữ liệu thành công."
+    except Exception as e: return False, str(e)
+
+# AI CENTER (PHÂN TÍCH VIDEO UPLOAD TRỰC TIẾP)
+def analyze_video_file(api_key, video_path):
+    client = genai.Client(api_key=api_key)
+    try:
+        with st.spinner("⏳ Đang tải video lên AI (Vui lòng chờ)..."):
+            uploaded_file = client.files.upload(file=video_path)
+        while uploaded_file.state.name == "PROCESSING":
             time.sleep(2)
-            return client.models.generate_content(model="gemini-1.5-flash", contents=f"Phân tích ngắn gọn: {auth}, {desc}. Hook, Pain, Remake.").text
+            uploaded_file = client.files.get(name=uploaded_file.name)
+        
+        prompt = "Phân tích Marketing video TikTok này: 1. Hook (3s đầu), 2. Nỗi đau, 3. Kịch bản, 4. Gợi ý Remake để bán hàng. Trả lời bằng tiếng Việt."
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[types.Content(role="user", parts=[types.Part.from_uri(file_uri=uploaded_file.uri, mime_type="video/mp4"), types.Part.from_text(text=prompt)])]
+        )
+        return response.text
     except Exception as e: return f"Lỗi AI: {str(e)}"
 
-# GIAO DIỆN
+# GIAO DIỆN SIDEBAR
 with st.sidebar:
-    st.title("🦅 TikTok OS v14.1"); st.caption("Clean & Powerful")
-    
-    with st.expander("🔑 Cấu hình API", expanded=True):
-        api_tk = st.text_input("Apify Token", type="password")
-        gemini_tk = st.text_input("Gemini API Key", type="password")
-    
-    with st.expander("⚙️ Quét & Lọc", expanded=True):
-        tags = st.text_area("Hashtags", "shilajit, amazonfinds")
-        separate_search = st.checkbox("✅ Quét riêng từng từ khóa", value=False)
-        
-        country_map = {"🌐 Global": "ALL", "Mỹ": "US", "Việt Nam": "VN", "Anh": "GB", "Pháp": "FR"}
-        country = country_map[st.selectbox("Quốc gia", list(country_map.keys()))]
-        limit = st.slider("Số lượng", 10, 100, 20)
-        
-        st.markdown("---")
-        st.markdown("**🤖 AI Hunter**")
-        filter_mode = st.radio("Chế độ:", ["🌐 Hiển thị tất cả", "🎯 Chỉ lấy Video AI", "🚫 Chặn Video AI"])
-        ai_keys = st.text_area("Từ khóa AI", "ai generated, #ai, midjourney", height=60)
-        use_filter = st.checkbox("Ẩn kênh lớn view thấp", value=True)
+    st.title("🦅 TikTok OS v15.1")
+    api_tk = st.text_input("Apify Token", type="password")
+    gemini_tk = st.text_input("Gemini API Key", type="password")
+    st.divider()
+    tags = st.text_area("Hashtags", "shilajit, wellness")
+    sep_search = st.checkbox("Quét riêng từng từ khóa", value=True)
+    limit = st.slider("Số lượng/từ khóa", 10, 50, 10)
+    if st.button("🚀 QUÉT XU HƯỚNG", type="primary"):
+        s, m = run_scan(api_tk, tags, limit, "US", sep_search)
+        if s: st.success(m); time.sleep(1); st.rerun()
+        else: st.error(m)
 
-    if st.button("🚀 QUÉT NGAY", type="primary"): 
-        with st.status("Đang quét..."):
-            s, m = run_scan(api_tk, tags, limit, country, filter_mode, ai_keys, "", separate_search)
-            if s: st.success(m); time.sleep(1); st.rerun()
-            else: st.error(m)
-            
-    if st.button("📥 Tải Excel"):
-        st.download_button("Download CSV", db.fetch().to_csv(index=False).encode('utf-8'), "data.csv", "text/csv")
+# TABS
+tab1, tab2, tab3 = st.tabs(["🔥 Săn Xu Hướng", "🧠 Trung Tâm AI (Upload)", "📊 Biểu Đồ"])
 
-# DASHBOARD
-df_all = db.fetch()
-df_saved = db.fetch(saved=True)
+with tab1:
+    df = db.fetch()
+    if not df.empty:
+        df['followers'] = pd.to_numeric(df['author_followers'], errors='coerce').fillna(0)
+        df['views'] = pd.to_numeric(df['current_views'], errors='coerce').fillna(0)
+        st.dataframe(df[['author_name', 'current_views', 'description', 'video_url']], width=1200)
+        st.info("💡 Copy link Video URL -> Tải về máy -> Qua Tab AI để phân tích sâu.")
+    else: st.info("Chưa có dữ liệu.")
 
-if not df_all.empty:
-    df_all['followers'] = pd.to_numeric(df_all['author_followers'], errors='coerce').fillna(0)
-    df_all['views'] = pd.to_numeric(df_all['current_views'], errors='coerce').fillna(0)
-    df_all['safe_followers'] = df_all['followers'].apply(lambda x: x if x > 0 else 1)
-    df_all['ratio'] = df_all['views'] / df_all['safe_followers']
-    
-    if use_filter: df_all = df_all[(df_all['ratio'] > 0.5) | (df_all['velocity_value'] > 500)]
+with tab2:
+    st.header("📂 Phân tích File Video Gốc")
+    st.markdown("Tải video về máy rồi upload vào đây. AI sẽ **xem trực tiếp** để bóc tách kịch bản.")
+    uploaded_video = st.file_uploader("Chọn video MP4", type=["mp4", "mov"])
+    if uploaded_video:
+        c1, c2 = st.columns([1, 1.5])
+        with c1: st.video(uploaded_video)
+        with c2:
+            if st.button("🚀 BẮT ĐẦU PHÂN TÍCH", type="primary"):
+                if not gemini_tk: st.error("Thiếu Gemini Key!")
+                else:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+                        tmp.write(uploaded_video.read()); tmp_path = tmp.name
+                    result = analyze_video_file(gemini_tk, tmp_path)
+                    st.markdown("### 📝 Kết quả:")
+                    st.markdown(f'<div class="analysis-box">{result}</div>', unsafe_allow_html=True)
+                    os.remove(tmp_path)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Videos", len(df_all))
-    c2.metric("Đã Lưu", len(df_saved))
-    if not df_all.empty: c3.metric("Top Speed", f"{df_all['velocity_value'].max():.0f}/h")
-
-    t1, t2, t3 = st.tabs(["🔥 Xu Hướng", "❤️ Kho Lưu Trữ", "📊 Biểu Đồ"])
-    
-    def render(d, saved=False):
-        if d.empty: st.info("Trống."); return
-        for _, r in d.head(50).iterrows():
-            emoji = "💎" if r.get('ratio', 0) > 1.0 else "😐"
-            with st.expander(f"{emoji} {r['velocity_value']:.0f}/h | {r['author_name']}"):
-                c1, c2 = st.columns([1.5, 1])
-                c1.caption(f"👀 {r['current_views']:,} views | 👤 {r['author_followers']:,} subs")
-                c1.caption(f"🎵 {r['music_title']}")
-                
-                # Nút chức năng
-                if c2.button("❤️ Lưu/Bỏ", key=f"s_{r['video_id']}_{saved}"): db.toggle_save(r['video_id'], r['is_saved']); st.rerun()
-                
-                if c2.button("🧠 Phân tích AI", key=f"a_{r['video_id']}_{saved}"):
-                    with st.spinner("AI đang đọc kịch bản..."):
-                        anl = run_gemini(gemini_tk, r['description'], r['author_name'])
-                        db.update_ai(r['video_id'], anl); st.rerun()
-                
-                # Player
-                try: 
-                    st.video(r['video_url'])
-                except: 
-                    st.warning("Video không phát được.")
-                    st.markdown(f"[🔗 Link Gốc]({r['video_url']})")
-                
-                if r['ai_analysis']: st.info(r['ai_analysis'])
-
-    with t1: render(df_all)
-    with t2: render(df_saved, True)
-    with t3:
-        if not df_all.empty:
-            try: st.plotly_chart(px.scatter(df_all, x='safe_followers', y='velocity_value', size='views', color='ratio', log_x=True, title="Rađa Viral"), use_container_width=True)
-            except: st.warning("Dữ liệu chưa đủ vẽ biểu đồ.")
-        else: st.info("Chưa có dữ liệu.")
-else:
-    st.info("👋 Chào bạn! Hãy nhập Token và bấm QUÉT để bắt đầu.")
+with tab3:
+    if not df.empty:
+        df['safe_followers'] = df['followers'].apply(lambda x: x if x > 0 else 1)
+        df['ratio'] = df['views'] / df['safe_followers']
+        st.plotly_chart(px.scatter(df, x='safe_followers', y='velocity_value', size='views', color='ratio', log_x=True, title="Rađa Viral"), use_container_width=True)
